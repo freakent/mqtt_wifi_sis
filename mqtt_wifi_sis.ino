@@ -1,12 +1,18 @@
 /*
- This example connects to an unencrypted WiFi network.
- Then it prints the MAC address of the WiFi module,
- the IP address obtained, and other network details.
+ This sketch connects to a Victron Energy GX device via MQTT
+ and performs multiple duties:
+   * Temperature and humidty sensor using AHT20 sensor
+   * Remote mode switching of Multiplus inverter/charger
+ 
+ It has been tested and deployed on Arduino Nano IOT 33.
 
- created 13 July 2010
- by dlf (Metodo2 srl)
- modified 31 May 2012
- by Tom Igoe
+ It has a dependency on the MQTT device service available here: https://github.com/freakent/dbus-mqtt-devices.
+
+ Created January 2022 by Martin Jarvis (FreakEnt/Gone-sailing)
+
+ To Do:
+ 1) Set the client ID using the WiFi MAC address
+ 2) Change payload of status message to allow for multiple services of the same type
  */
 #include <SPI.h>
 #include <WiFiNINA.h>
@@ -15,37 +21,38 @@
 
 #include "arduino_secrets.h" 
 
-const boolean headless = true;
+const char VERSION[] = "v1.0"; 
+const boolean headless = true; //useful for debugging 
 
-// constants won't change. They're used here to set pin numbers:
+///////please enter your sensitive data in the Secret tab/arduino_secrets.h
+const char ssid[] = SECRET_SSID;        // your network SSID (name)
+const char pass[] = SECRET_PASS;        // your network password (use for WPA, or use as key for WEP)
+const char broker[] = MQTT_SERVER;      // "venus.local"; // "test.mosquitto.org";
+int        port     = MQTT_SERVER_PORT;
+
 const int buttonPin = 2;     // the number of the pushbutton pin
 const int ledPin =  13;      // the number of the LED pin
 
-const char broker[] = "192.168.1.139"; // "venus.local"; // "test.mosquitto.org";
-int        port     = 1883;
-const char portalIDTopic[]  = "N/+/system/0/Serial"; // "arduino/simple";
-const char clientId[] = "arduino-freakent";
-int deviceInstance;
+const char clientId[] = "fe001"; // Do not include characters .-: only use underscores _
+const char serviceId[] = "t1"; // any string to uniquely identify the service on this device
 
-String keepaliveTopic = "R/<portal ID>/keepalive";
-String keepalivePayload = "[\"vebus/+/Mode\", \"temperature/+/#\"]";
-const char deviceStatusTopicTemplate[] = "device/<client ID>/Status";
-const char deviceInstanceTopicTemplate[] = "device/<client ID>/DeviceInstance";
-const int keepaliveInterval = 300000; //45000;
-
-String vebusModeTopic = "/<portal ID>/vebus/257/Mode";
-String temperatureTopic = "/<portal ID>/temperature/300/";
-const int tempReadingInterval = 120000;
-
-///////please enter your sensitive data in the Secret tab/arduino_secrets.h
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char pass[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
-int status = WL_IDLE_STATUS;     // the WiFi radio's status
+const char portalIDTopic[]  = "N/+/system/0/Serial"; // Topic to retrieve the VRM Portal ID for the Venus device
+const char keepaliveTopicTemplate[] = "R/<portal ID>/keepalive"; // Topic to send keepalive request to
+const char keepalivePayload[] = "[\"vebus/+/Mode\", \"temperature/+/#\"]"; // Choose which topics you want to keepalive (see dbus-mqtt)
+const int  keepaliveInterval = 300000; // How often to publish the keep alive request (see dbus-mqtt)
+const char deviceStatusTopicTemplate[] = "device/<client ID>/Status"; // Topic to send client status to and to regstister to the dbus-mqtt-device service
+const char deviceInstanceTopicTemplate[] = "device/<client ID>/DeviceInstance"; // Topic to subscribe to so the dbus-mqtt-device service will provide an instance id to use when publishing to dbus-mqtt 
+const char vebusModeTopicTemplate[] = "/<portal ID>/vebus/257/Mode"; // dbus-mqtt topic for handling the multiplus mode (inverter/charger onn/off), is prefixed with N, R or W at runtime
+const char temperatureTopicTemplate[] = "/<portal ID>/temperature/<instance ID>/"; // dbus-mqtt topic for handling Temperator sensors, is prefixed with N or W at runtime
+const int  tempReadingInterval = 120000; // How often to publish a temperature reading
 
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
+int status = WL_IDLE_STATUS;     // the WiFi radio's status
 
 String portalID = "";
+int instanceID = -1;
+
 
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
@@ -98,33 +105,35 @@ void loop() {
   } else {
 
     if (portalID != "") {
+
+      // Handle Keepalive (see Victron dbus-mqtt) 
       if (millis() - lastKeepaliveTime >= keepaliveInterval) {
-        lastKeepaliveTime = millis();       // save the last time a message was sent
+        lastKeepaliveTime = millis();       // save the last time a keepalive message was sent
         publishKeepalive();
       }
 
-      if ((millis() - lastTempReadingTime >= tempReadingInterval) || (lastTempReadingTime == 0)) {
-        byte mac[6];
-        WiFi.macAddress(mac);
-        Serial.print("MAC address: ");
-        printMacAddress(mac);
-        lastTempReadingTime = millis();
-        processTemperature();
+      if (instanceID > 0) {
+
+        // Handle temperatures
+        if ((millis() - lastTempReadingTime >= tempReadingInterval) || (lastTempReadingTime == 0)) {
+          byte mac[6];
+          WiFi.macAddress(mac);
+          Serial.print("MAC address: ");
+          printMacAddress(mac);
+          lastTempReadingTime = millis();
+          processTemperature();
+        }
       }
     }
 
     mqttClient.poll();
   }
-  // check the network connection once every 10 seconds:
-  //delay(10000);
-  //printCurrentNet();
-  
-  //delay(500);
+
 }
 
-/* * * * * * * * * * * * * * *
+/* * * * * * * * * * * * * * * * *
  *   o n M q t t M e s s a g e 
- * * * * * * * * * * * * * * */
+ * * * * * * * * * * * * * * * * */
 void onMqttMessage(int messageSize) {
   // we received a message, print out the topic and contents
   Serial.print("Received a message on topic [");
@@ -135,7 +144,8 @@ void onMqttMessage(int messageSize) {
 
   String topic = String(mqttClient.messageTopic());
   
-  if (topic.endsWith("/system/0/Serial") && messageSize > 0) {
+  // Handle VRM Portal ID messages from dbus-mqtt
+  if (topic.endsWith("/system/0/Serial") && messageSize > 0) {  // VRM Portal Id
   
     DynamicJsonDocument doc(messageSize+10); // {"value": "dca6328d3ea7"} see https://arduinojson.org/v6/assistant/
     DeserializationError err = deserializeJson(doc, mqttClient);
@@ -152,28 +162,21 @@ void onMqttMessage(int messageSize) {
       portalID = newportalID;
       Serial.print("portalID: "); Serial.println(portalID); Serial.println();
 
-      // subscribe to a topic
-      vebusModeTopic.replace("<portal ID>", portalID);
-      mqttClient.subscribe("N"+vebusModeTopic, 2);
-      Serial.print("subscribe vebusModeTopic: "); Serial.println("N"+vebusModeTopic); Serial.println();
-
-      mqttClient.beginMessage("R"+vebusModeTopic);
+      // subscribe to a Mode topic on the Vebus
+      mqttClient.subscribe(vebusModeTopic("N"), 2);
+      Serial.print("subscribe vebusModeTopic: "); Serial.println(vebusModeTopic("N")); Serial.println();
+      // send a read request to dbus-mqtt
+      mqttClient.beginMessage(vebusModeTopic("R"));
       mqttClient.print("");
       mqttClient.endMessage();    
-      Serial.print("publish Read Request 'R' to vebusModeTopic: "); Serial.println("R"+vebusModeTopic); Serial.println();
+      Serial.print("publish Read Request 'R' to vebusModeTopic: "); Serial.println(vebusModeTopic("R")); Serial.println();
 
-      // Force keepalive
-      keepaliveTopic.replace("<portal ID>", portalID);
-      publishKeepalive();
-
-      temperatureTopic.replace("<portal ID>", portalID);
-  //  } else {
-  //    Serial.println("Ignoring duplicate portal id");
     }
     
     return;
   }
 
+  // Handle DeviceInstance messages from dbus-mqtt-devices
   if (topic == deviceInstanceTopic() && messageSize > 0) {
     DynamicJsonDocument doc(messageSize+10); // {"value": 100} see https://arduinojson.org/v6/assistant/
     DeserializationError err = deserializeJson(doc, mqttClient);
@@ -185,13 +188,13 @@ void onMqttMessage(int messageSize) {
     }
     doc.shrinkToFit();
     
-    deviceInstance = doc["Temperature"];
-    Serial.print("DeviceInstance: "); Serial.println(deviceInstance); Serial.println();
+    instanceID = doc[serviceId];
+    Serial.print("DeviceInstance: "); Serial.println(instanceID); Serial.println();
 
     return;
   }
 
-   // use the Stream interface to print the contents
+   // Unexpected message so use the Stream interface to print the contents
   while (mqttClient.available()) {
     Serial.print((char)mqttClient.read());
   }
@@ -200,16 +203,4 @@ void onMqttMessage(int messageSize) {
   Serial.println();
 }
 
-/* * * * * * *
- *  
- * * * * * * */
-void publishKeepalive() {
-  if (portalID != "") {
-    Serial.print("publish to keepaliveTopic: ");
-    Serial.println(keepaliveTopic);
-    mqttClient.beginMessage(keepaliveTopic);
-    mqttClient.print(keepalivePayload);
-    mqttClient.endMessage();
-  }
-}
 

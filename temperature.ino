@@ -23,22 +23,33 @@ void publishTemperature(float temp, float humi) {
   Serial.println(); Serial.print("MQTT Connection status: "); Serial.print(mqttClient.connected());
   Serial.print(", WiFi status: "); Serial.println(WiFi.status());
 
-  mqttClient.beginMessage("W"+temperatureTopic+"Temperature");
+  mqttClient.beginMessage(temperatureTopic("W", "Temperature"));
   mqttClient.print("{ \"value\":");
   mqttClient.print(temp);
   mqttClient.print("}");
   mqttClient.endMessage();    
   Serial.print("publish temperature ");
   Serial.print(temp);
-  Serial.print(" to temperatureTopic: "); Serial.println("W"+temperatureTopic+"Temperature"); 
+  Serial.print(" to temperatureTopic: "); Serial.println(temperatureTopic("W", "Temperature")); 
 
-  mqttClient.beginMessage("W"+temperatureTopic+"Humidity");
+  /* 
+  mqttClient.beginMessage(temperatureTopic("W", "Pressure"));
+  mqttClient.print("{ \"value\":");
+  mqttClient.print(pressue);
+  mqttClient.print("}");
+  mqttClient.endMessage();    
+  Serial.print("publish pressue ");
+  Serial.print(pressure);
+  Serial.print(" to temperatureTopic: "); Serial.println(temperatureTopic("W", "Pressue")); 
+  */
+
+  mqttClient.beginMessage(temperatureTopic("W", "Humidity"));
   mqttClient.print("{ \"value\":");
   mqttClient.print(humi);
   mqttClient.print("}");
   mqttClient.endMessage();    
   Serial.print("publish humidity ");
   Serial.print(humi);
-  Serial.print(" to temperatureTopic: "); Serial.println("W"+temperatureTopic+"Humidity"); 
+  Serial.print(" to temperatureTopic: "); Serial.println(temperatureTopic("W", "Humidity")); 
   Serial.println();
 }

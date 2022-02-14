@@ -1,24 +1,3 @@
-String deviceStatusTopic() {
-  String topic =  String(deviceStatusTopicTemplate);
-  topic.replace("<client ID>", clientId);
-  return topic;
-}
-
-DynamicJsonDocument deviceStatusPayload(int connected) {
-  DynamicJsonDocument doc(1024);
-  doc["clientId"] = clientId;
-  doc["connected"] = connected;
-  JsonArray services = doc.createNestedArray("services");
-  services.add("Temperature");
-  return doc;
-}
-
-String deviceInstanceTopic() {
-  String topic =  String(deviceInstanceTopicTemplate);
-  topic.replace("<client ID>", clientId);
-  return topic;
-}
-
 void initialiseMQTT() {
   
   // You can provide a unique client ID, if not set the library uses Arduino-millis()
@@ -48,20 +27,74 @@ void initialiseMQTT() {
     delay(30000);
     return;
   }
-  Serial.print("Subscribing to Decice Instance topic: "); Serial.println(deviceInstanceTopic());
+  Serial.println("You're connected to the MQTT broker!"); Serial.println();
+
+  Serial.print("Subscribing to Portal ID topic: "); Serial.println(portalIDTopic);
+  mqttClient.subscribe(portalIDTopic, 2);   // subscribe to the main Portal ID topic
+
+  Serial.print("Subscribing to Device Instance topic: "); Serial.println(deviceInstanceTopic());
   mqttClient.subscribe(deviceInstanceTopic(), 2);   
 
   mqttClient.beginMessage(deviceStatusTopic(), false, 1);
   serializeJson(deviceStatusPayload(1), mqttClient);
   mqttClient.endMessage();    
 
-  Serial.println("You're connected to the MQTT broker!"); Serial.println();
-
-  Serial.print("Subscribing to Portal ID topic: "); Serial.println(portalIDTopic);
-  mqttClient.subscribe(portalIDTopic, 2);   // subscribe to the main Portal ID topic
-
   // topics can be unsubscribed using:
   // mqttClient.unsubscribe(topic);
+}
+
+/* * * * * * *
+ *  
+ * * * * * * */
+void publishKeepalive() {
+  if (portalID != "") {
+    Serial.print("publish to keepaliveTopic: ");
+    Serial.println(keepaliveTopic());
+    mqttClient.beginMessage(keepaliveTopic());
+    mqttClient.print(keepalivePayload);
+    mqttClient.endMessage();
+  }
+}
+
+String keepaliveTopic() {
+  String topic =  String(keepaliveTopicTemplate);
+  topic.replace("<portal ID>", portalID);
+  return topic;
+}
+
+String deviceStatusTopic() {
+  String topic =  String(deviceStatusTopicTemplate);
+  topic.replace("<client ID>", clientId);
+  return topic;
+}
+
+DynamicJsonDocument deviceStatusPayload(int connected) {
+  DynamicJsonDocument doc(1024);
+  doc["clientId"] = clientId;
+  doc["connected"] = connected;
+  doc["version"] = VERSION;
+  JsonObject services = doc.createNestedObject("services");
+  services[serviceId] = "temperature"; // Lowercase service type
+  return doc;
+}
+
+String deviceInstanceTopic() {
+  String topic =  String(deviceInstanceTopicTemplate);
+  topic.replace("<client ID>", clientId);
+  return topic;
+}
+
+String vebusModeTopic(String mode) {
+  String topic =  String(vebusModeTopicTemplate);
+  topic.replace("<portal ID>", portalID);
+  return topic;
+}
+
+String temperatureTopic(String mode, String suffix) {
+  String topic =  mode + String(temperatureTopicTemplate) + suffix;
+  topic.replace("<portal ID>", portalID);
+  topic.replace("<instance ID>", String(instanceID));
+  return topic;
 }
 
 
