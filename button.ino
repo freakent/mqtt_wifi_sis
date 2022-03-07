@@ -1,3 +1,7 @@
+/*
+1=Charger Only;2=Inverter Only;3=On;4=Off
+*/
+
 void checkButton() {
   // read the state of the pushbutton value:
   buttonReading = digitalRead(buttonPin);
